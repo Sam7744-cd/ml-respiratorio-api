@@ -20,11 +20,11 @@ from extract_features import extract_features
 app = Flask(__name__)
 CORS(app)
 
+# RUTAS BASE
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
-MODELS_DIR = os.path.join(PROJECT_DIR, "models")
 
-RECORDS_DIR = os.path.join(PROJECT_DIR, "records")
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+RECORDS_DIR = os.path.join(BASE_DIR, "records")
 AUDIOS_DIR = os.path.join(RECORDS_DIR, "audios")
 LOGS_DIR = os.path.join(RECORDS_DIR, "logs")
 PLOTS_DIR = os.path.join(RECORDS_DIR, "plots")
@@ -40,6 +40,7 @@ PLOTS_SPECTROGRAM_DIR = os.path.join(PLOTS_DIR, "spectrograms")
 
 PREDICTIONS_CSV = os.path.join(LOGS_DIR, "predicciones.csv")
 
+# Crear carpetas si no existen
 os.makedirs(PENDING_DIR, exist_ok=True)
 os.makedirs(ERROR_DIR, exist_ok=True)
 os.makedirs(HEALTHY_DIR, exist_ok=True)
@@ -49,13 +50,14 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(PLOTS_WAVEFORM_DIR, exist_ok=True)
 os.makedirs(PLOTS_SPECTROGRAM_DIR, exist_ok=True)
 
+# CARGAR MODELO
 model = joblib.load(os.path.join(MODELS_DIR, "model.pkl"))
 scaler = joblib.load(os.path.join(MODELS_DIR, "scaler.pkl"))
 encoder = joblib.load(os.path.join(MODELS_DIR, "encoder.pkl"))
 
 print(" Modelo ML cargado correctamente")
 
-
+# GUARDAR LOG
 def save_prediction_log(data):
     df_new = pd.DataFrame([data])
 
@@ -67,7 +69,7 @@ def save_prediction_log(data):
 
     df_final.to_csv(PREDICTIONS_CSV, index=False)
 
-
+# OBTENER CARPETA SEGÚN CLASE
 def get_class_folder(pred_label):
     pred_label = pred_label.strip().lower()
 
@@ -80,7 +82,7 @@ def get_class_folder(pred_label):
     else:
         return ERROR_DIR
 
-
+# GENERAR VISUALIZACIONES
 def generate_audio_plots(audio_path, base_name):
     y, sr = librosa.load(audio_path, sr=22050)
 
@@ -119,22 +121,21 @@ def generate_audio_plots(audio_path, base_name):
         "spectrogram_filename": spectrogram_filename,
     }
 
-
+# SERVIR AUDIOS
 @app.route("/audios/<path:filename>", methods=["GET"])
 def serve_audio(filename):
     return send_from_directory(AUDIOS_DIR, filename)
 
-
+# SERVIR WAVEFORMS
 @app.route("/plots/waveforms/<path:filename>", methods=["GET"])
 def serve_waveform(filename):
     return send_from_directory(PLOTS_WAVEFORM_DIR, filename)
 
-
+# SERVIR ESPECTROGRAMAS
 @app.route("/plots/spectrograms/<path:filename>", methods=["GET"])
 def serve_spectrogram(filename):
     return send_from_directory(PLOTS_SPECTROGRAM_DIR, filename)
-
-
+# PREDICCIÓN
 @app.route("/predict-audio", methods=["POST"])
 def predict_audio():
     pending_audio_path = None
@@ -161,9 +162,11 @@ def predict_audio():
         filename = f"audio_{timestamp}_{unique_id}{extension}"
         base_name = os.path.splitext(filename)[0]
 
+        # Guardar temporal
         pending_audio_path = os.path.join(PENDING_DIR, filename)
         file.save(pending_audio_path)
 
+        # Extraer features
         features = extract_features(pending_audio_path)
 
         X = pd.DataFrame([features])
@@ -171,6 +174,7 @@ def predict_audio():
         if non_numeric_cols:
             X = X.drop(columns=non_numeric_cols)
 
+        # Escalar y predecir
         X_scaled = scaler.transform(X)
 
         pred_encoded = model.predict(X_scaled)[0]
@@ -179,20 +183,24 @@ def predict_audio():
         pred_label = encoder.inverse_transform([pred_encoded])[0].strip().lower()
         confidence = float(probs[pred_encoded])
 
+        # Mover audio a carpeta de clase
         class_folder = get_class_folder(pred_label)
         final_audio_path = os.path.join(class_folder, filename)
         shutil.move(pending_audio_path, final_audio_path)
 
         relative_audio_path = os.path.relpath(final_audio_path, AUDIOS_DIR).replace("\\", "/")
 
+        # Generar gráficas
         plots = generate_audio_plots(final_audio_path, base_name)
 
+        # URL base dinámica para local o Render
         base_url = request.host_url.rstrip("/")
 
         waveform_url = f"{base_url}/plots/waveforms/{plots['waveform_filename']}"
         spectrogram_url = f"{base_url}/plots/spectrograms/{plots['spectrogram_filename']}"
         audio_url = f"{base_url}/audios/{relative_audio_path}"
 
+        # Features resumidas
         features_resumen = {
             "duration": round(float(features.get("duration", 0)), 4),
             "rms_mean": round(float(features.get("rms_mean", 0)), 6),
@@ -201,6 +209,7 @@ def predict_audio():
             "bandwidth_mean": round(float(features.get("bandwidth_mean", 0)), 4),
         }
 
+        # Guardar log
         log_data = {
             "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "archivo": filename,
@@ -238,8 +247,7 @@ def predict_audio():
                 pass
 
         return jsonify({"error": str(e)}), 500
-
-
+# RUN
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
     app.run(host="0.0.0.0", port=port)
